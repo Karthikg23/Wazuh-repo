@@ -1,0 +1,82 @@
+# ansible/install_wazuh_manager.yml
+- name: Install Wazuh Manager
+  hosts: wazuh_manager
+  become: yes
+  tasks:
+    - name: Add Wazuh repository
+      apt_repository:
+        repo: 'deb https://packages.wazuh.com/4.x/apt/ stable main'
+        state: present
+        filename: 'wazuh'
+
+    - name: Install Wazuh Manager and dependencies
+      apt:
+        name: "{{ item }}"
+        update_cache: yes
+      loop:
+        - wazuh-manager
+        - filebeat
+        - curl
+        - unzip
+
+    - name: Enable and start services
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: started
+      loop:
+        - wazuh-manager
+        - filebeat
+
+# ansible/install_wazuh_agent.yml
+- name: Install Wazuh Agent
+  hosts: wazuh_agents
+  become: yes
+  vars:
+    wazuh_manager_ip: "<WAZUH_MANAGER_IP>"
+  tasks:
+    - name: Download and install Wazuh agent
+      shell: |
+        curl -sO https://packages.wazuh.com/4.x/agents/install.sh
+        bash install.sh -a $wazuh_manager_ip
+
+    - name: Start agent
+      systemd:
+        name: wazuh-agent
+        enabled: yes
+        state: started
+
+# ansible/hosts
+[wazuh_manager]
+<MANAGER_EC2_IP> ansible_user=ubuntu
+
+[wazuh_agents]
+<AGENT1_EC2_IP> ansible_user=ubuntu
+<AGENT2_EC2_IP> ansible_user=ubuntu
+
+# scripts/cloudtrail_s3_wazuh_config.sh
+#!/bin/bash
+BUCKET_NAME="<your-cloudtrail-s3-bucket>"
+LOCAL_DIR="/var/ossec/logs/aws-logs"
+
+mkdir -p $LOCAL_DIR
+
+cat <<EOF > /var/ossec/etc/ossec.conf
+<ossec_config>
+  <localfile>
+    <log_format>json</log_format>
+    <location>$LOCAL_DIR/cloudtrail.log</location>
+  </localfile>
+</ossec_config>
+EOF
+
+echo "*/5 * * * * aws s3 sync s3://$BUCKET_NAME/ $LOCAL_DIR/ --exclude '*' --include '*.json'" | crontab -
+
+# scripts/agent_registration.sh
+#!/bin/bash
+WAZUH_MANAGER="<WAZUH_MANAGER_IP>"
+
+curl -sO https://packages.wazuh.com/4.x/agents/install.sh
+bash install.sh $WAZUH_MANAGER
+systemctl enable wazuh-agent
+systemctl start wazuh-agent
